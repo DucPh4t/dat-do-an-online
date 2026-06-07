@@ -1,0 +1,15 @@
+services:
+  delicore:
+    build: .
+    container_name: delicore-demo
+    ports:
+      - "4000:4000"
+    volumes:
+      - delicore_data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+    restart: unless-stopped
+
+volumes:
+  delicore_data:
