@@ -160,16 +160,59 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => ok(res, { user: req.user }));
+
 app.get('/api/categories', (_req, res) => ok(res, { categories: db.prepare('SELECT * FROM DANHMUC ORDER BY ThuTu, MaDM').all() }));
+app.post('/api/categories', requireAuth, requireAdmin, (req, res) => {
+  const { TenDM, MoTa, HinhAnh, ThuTu } = req.body;
+  if (!TenDM) return bad(res, 'Tên danh mục không được để trống.');
+  const result = db.prepare('INSERT INTO DANHMUC (TenDM, MoTa, HinhAnh, ThuTu) VALUES (?, ?, ?, ?)').run(TenDM, MoTa || '', HinhAnh || '', Number(ThuTu || 0));
+  ok(res, { category: db.prepare('SELECT * FROM DANHMUC WHERE MaDM = ?').get(result.lastInsertRowid) });
+});
+app.put('/api/categories/:id', requireAuth, requireAdmin, (req, res) => {
+  const { TenDM, MoTa, HinhAnh, ThuTu } = req.body;
+  if (!TenDM) return bad(res, 'Tên danh mục không được để trống.');
+  db.prepare('UPDATE DANHMUC SET TenDM = ?, MoTa = ?, HinhAnh = ?, ThuTu = ? WHERE MaDM = ?').run(TenDM, MoTa || '', HinhAnh || '', Number(ThuTu || 0), req.params.id);
+  ok(res, { category: db.prepare('SELECT * FROM DANHMUC WHERE MaDM = ?').get(req.params.id) });
+});
+app.delete('/api/categories/:id', requireAuth, requireAdmin, (req, res) => {
+  const used = db.prepare('SELECT COUNT(*) AS total FROM MONAN WHERE MaDM = ?').get(req.params.id).total;
+  if (used > 0) return bad(res, 'Không thể xóa danh mục đang có món ăn.');
+  db.prepare('DELETE FROM DANHMUC WHERE MaDM = ?').run(req.params.id);
+  ok(res, { success: true });
+});
 
 app.get('/api/shippers', requireAuth, requireAdmin, (_req, res) => {
   const shippers = db.prepare(`
-    SELECT sp.MaShipper, sp.BienSoXe, sp.KhuVucGiao, tk.HoTen, tk.SDT, tk.Email
+    SELECT sp.MaShipper, sp.MaTK, sp.BienSoXe, sp.KhuVucGiao, tk.HoTen, tk.SDT, tk.Email, tk.TrangThai
     FROM SHIPPER sp JOIN TAIKHOAN tk ON tk.MaTK = sp.MaTK
-    WHERE tk.TrangThai = 'HoatDong'
     ORDER BY sp.MaShipper
   `).all();
   ok(res, { shippers });
+});
+app.post('/api/shippers', requireAuth, requireAdmin, (req, res) => {
+  const { HoTen, Email, MatKhau, SDT, BienSoXe, KhuVucGiao } = req.body;
+  if (!HoTen || !Email || !MatKhau) return bad(res, 'Vui lòng nhập họ tên, email và mật khẩu shipper.');
+  const exists = db.prepare('SELECT MaTK FROM TAIKHOAN WHERE Email = ?').get(Email);
+  if (exists) return bad(res, 'Email shipper đã tồn tại.');
+  const tk = db.prepare(`INSERT INTO TAIKHOAN (Email, MatKhauHash, HoTen, SDT, VaiTro, TrangThai, NgayTao) VALUES (?, ?, ?, ?, 'Shipper', 'HoatDong', ?)`).run(Email, MatKhau, HoTen, SDT || '', new Date().toISOString());
+  const sp = db.prepare('INSERT INTO SHIPPER (MaTK, BienSoXe, KhuVucGiao) VALUES (?, ?, ?)').run(tk.lastInsertRowid, BienSoXe || '', KhuVucGiao || '');
+  ok(res, { shipper: db.prepare(`SELECT sp.MaShipper, sp.MaTK, sp.BienSoXe, sp.KhuVucGiao, tk.HoTen, tk.SDT, tk.Email, tk.TrangThai FROM SHIPPER sp JOIN TAIKHOAN tk ON tk.MaTK = sp.MaTK WHERE sp.MaShipper = ?`).get(sp.lastInsertRowid) });
+});
+app.put('/api/shippers/:id', requireAuth, requireAdmin, (req, res) => {
+  const { HoTen, Email, MatKhau, SDT, BienSoXe, KhuVucGiao, TrangThai } = req.body;
+  const shipper = db.prepare('SELECT * FROM SHIPPER WHERE MaShipper = ?').get(req.params.id);
+  if (!shipper) return bad(res, 'Không tìm thấy shipper.', 404);
+  if (!HoTen || !Email) return bad(res, 'Vui lòng nhập họ tên và email shipper.');
+  if (MatKhau) db.prepare('UPDATE TAIKHOAN SET Email = ?, MatKhauHash = ?, HoTen = ?, SDT = ?, TrangThai = ? WHERE MaTK = ?').run(Email, MatKhau, HoTen, SDT || '', TrangThai || 'HoatDong', shipper.MaTK);
+  else db.prepare('UPDATE TAIKHOAN SET Email = ?, HoTen = ?, SDT = ?, TrangThai = ? WHERE MaTK = ?').run(Email, HoTen, SDT || '', TrangThai || 'HoatDong', shipper.MaTK);
+  db.prepare('UPDATE SHIPPER SET BienSoXe = ?, KhuVucGiao = ? WHERE MaShipper = ?').run(BienSoXe || '', KhuVucGiao || '', req.params.id);
+  ok(res, { shipper: db.prepare(`SELECT sp.MaShipper, sp.MaTK, sp.BienSoXe, sp.KhuVucGiao, tk.HoTen, tk.SDT, tk.Email, tk.TrangThai FROM SHIPPER sp JOIN TAIKHOAN tk ON tk.MaTK = sp.MaTK WHERE sp.MaShipper = ?`).get(req.params.id) });
+});
+app.delete('/api/shippers/:id', requireAuth, requireAdmin, (req, res) => {
+  const shipper = db.prepare('SELECT * FROM SHIPPER WHERE MaShipper = ?').get(req.params.id);
+  if (!shipper) return bad(res, 'Không tìm thấy shipper.', 404);
+  db.prepare("UPDATE TAIKHOAN SET TrangThai = 'KhoaTam' WHERE MaTK = ?").run(shipper.MaTK);
+  ok(res, { success: true });
 });
 
 app.get('/api/dishes', (req, res) => {
@@ -188,12 +231,7 @@ app.get('/api/dishes', (req, res) => {
 app.get('/api/dishes/:id', (req, res) => {
   const dish = db.prepare(`SELECT m.*, dm.TenDM, ROUND(m.Gia * (1 - m.PhanTramGiam / 100.0), 0) AS GiaSauGiam FROM MONAN m JOIN DANHMUC dm ON dm.MaDM = m.MaDM WHERE m.MaMon = ?`).get(req.params.id);
   if (!dish) return bad(res, 'Không tìm thấy món ăn.', 404);
-  const reviews = db.prepare(`
-    SELECT dg.*, tk.HoTen AS TenKhach
-    FROM DANHGIA dg JOIN KHACHHANG kh ON kh.MaKH = dg.MaKH JOIN TAIKHOAN tk ON tk.MaTK = kh.MaTK
-    WHERE dg.MaMon = ? AND dg.TrangThai = 'HienThi'
-    ORDER BY dg.MaDG DESC
-  `).all(req.params.id);
+  const reviews = db.prepare(`SELECT dg.*, tk.HoTen AS TenKhach FROM DANHGIA dg JOIN KHACHHANG kh ON kh.MaKH = dg.MaKH JOIN TAIKHOAN tk ON tk.MaTK = kh.MaTK WHERE dg.MaMon = ? AND dg.TrangThai = 'HienThi' ORDER BY dg.MaDG DESC`).all(req.params.id);
   ok(res, { dish, reviews });
 });
 
