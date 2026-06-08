@@ -19,6 +19,53 @@ app.use(express.json());
 const ok = (res, data = {}) => res.json(data);
 const bad = (res, message, status = 400) => res.status(status).json({ message });
 
+const roleForUi = (role) => ({
+  KhachHang: 'KHACHHANG',
+  NhanVien: 'NHANVIEN',
+  Shipper: 'SHIPPER',
+  Admin: 'ADMIN'
+}[role] || role);
+
+const dishStatusFromUi = (value) => {
+  if (value === true || value === 1 || value === '1') return 'CoSan';
+  if (value === false || value === 0 || value === '0') return 'NgungBan';
+  return value || 'CoSan';
+};
+
+const paymentMethodFromUi = (value = 'Tiền mặt') => ({
+  'Tiền mặt': 'TienMat',
+  'Chuyển khoản': 'ChuyenKhoan',
+  'Ví điện tử': 'MoMo',
+  TienMat: 'TienMat',
+  ChuyenKhoan: 'ChuyenKhoan',
+  VNPay: 'VNPay',
+  MoMo: 'MoMo'
+}[value] || 'TienMat');
+
+const orderStatusFromUi = (value) => ({
+  'Chờ xác nhận': 'ChoXacNhan',
+  'Đang xử lý': 'DangChuanBi',
+  'Đang chuẩn bị': 'DangChuanBi',
+  'Đang giao': 'DangGiao',
+  'Hoàn thành': 'HoanThanh',
+  'Đã hủy': 'DaHuy',
+  ChoXacNhan: 'ChoXacNhan',
+  DangChuanBi: 'DangChuanBi',
+  DangGiao: 'DangGiao',
+  HoanThanh: 'HoanThanh',
+  DaHuy: 'DaHuy'
+}[value] || null);
+
+const deliveryStatusFromUi = (value) => ({
+  'Chờ phân công': 'ChoNhan',
+  'Chờ nhận': 'ChoNhan',
+  'Đang giao': 'DangGiao',
+  'Đã giao': 'DaGiao',
+  ChoNhan: 'ChoNhan',
+  DangGiao: 'DangGiao',
+  DaGiao: 'DaGiao'
+}[value] || null);
+
 function publicAccount(row) {
   if (!row) return null;
   return {
@@ -26,22 +73,27 @@ function publicAccount(row) {
     Email: row.Email,
     HoTen: row.HoTen,
     SDT: row.SDT,
-    VaiTro: row.VaiTro,
+    VaiTro: roleForUi(row.VaiTro),
+    VaiTroSQL: row.VaiTro,
     TrangThai: row.TrangThai,
     MaKH: row.MaKH,
     MaNV: row.MaNV,
+    MaShipper: row.MaShipper,
     DiaChi: row.DiaChi,
     AnhDaiDien: row.AnhDaiDien,
-    ChucVu: row.ChucVu
+    ChucVu: row.ChucVu,
+    BienSoXe: row.BienSoXe,
+    KhuVucGiao: row.KhuVucGiao
   };
 }
 
 function findAccountById(id) {
   return db.prepare(`
-    SELECT tk.*, kh.MaKH, kh.DiaChi, kh.AnhDaiDien, nv.MaNV, nv.ChucVu
+    SELECT tk.*, kh.MaKH, kh.DiaChi, kh.AnhDaiDien, nv.MaNV, nv.ChucVu, sp.MaShipper, sp.BienSoXe, sp.KhuVucGiao
     FROM TAIKHOAN tk
     LEFT JOIN KHACHHANG kh ON kh.MaTK = tk.MaTK
     LEFT JOIN NHANVIEN nv ON nv.MaTK = tk.MaTK
+    LEFT JOIN SHIPPER sp ON sp.MaTK = tk.MaTK
     WHERE tk.MaTK = ?
   `).get(id);
 }
@@ -51,7 +103,7 @@ function requireAuth(req, res, next) {
   const accountId = token ? tokens.get(token) : null;
   if (!accountId) return bad(res, 'Vui lòng đăng nhập.', 401);
   const account = findAccountById(accountId);
-  if (!account || account.TrangThai !== 'Hoạt động') return bad(res, 'Tài khoản không hợp lệ.', 401);
+  if (!account || account.TrangThai !== 'HoatDong') return bad(res, 'Tài khoản không hợp lệ.', 401);
   req.user = publicAccount(account);
   next();
 }
@@ -62,9 +114,9 @@ function requireAdmin(req, res, next) {
 }
 
 function ensureCart(maKH) {
-  const existing = db.prepare('SELECT * FROM GIOHANG WHERE MaKH = ?').get(maKH);
+  const existing = db.prepare("SELECT * FROM GIOHANG WHERE MaKH = ? AND TrangThai = 'Active' ORDER BY MaGH DESC LIMIT 1").get(maKH);
   if (existing) return existing.MaGH;
-  return db.prepare('INSERT INTO GIOHANG (MaKH, NgayTao) VALUES (?, ?)').run(maKH, new Date().toISOString()).lastInsertRowid;
+  return db.prepare('INSERT INTO GIOHANG (MaKH, NgayTao, TrangThai) VALUES (?, ?, ?)').run(maKH, new Date().toISOString(), 'Active').lastInsertRowid;
 }
 
 function cartRows(maKH) {
@@ -100,8 +152,14 @@ function orderDetails(maDH) {
     JOIN MONAN m ON m.MaMon = ct.MaMon
     WHERE ct.MaDH = ?
   `).all(maDH);
-  const payment = db.prepare('SELECT * FROM THANHTOAN WHERE MaDH = ?').get(maDH);
-  const delivery = db.prepare('SELECT * FROM GIAOHANG WHERE MaDH = ?').get(maDH);
+  const payment = db.prepare('SELECT * FROM THANHTOAN WHERE MaDH = ? ORDER BY MaTT DESC LIMIT 1').get(maDH);
+  const delivery = db.prepare(`
+    SELECT gh.*, tk.HoTen AS TenShipper, tk.SDT AS SDTShipper
+    FROM GIAOHANG gh
+    LEFT JOIN SHIPPER sp ON sp.MaShipper = gh.MaShipper
+    LEFT JOIN TAIKHOAN tk ON tk.MaTK = sp.MaTK
+    WHERE gh.MaDH = ?
+  `).get(maDH);
   return { ...order, items, payment, delivery };
 }
 
@@ -109,7 +167,7 @@ app.get('/api/health', (_req, res) => ok(res, { status: 'ok' }));
 
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
-  const account = db.prepare('SELECT * FROM TAIKHOAN WHERE Email = ? AND MatKhau = ?').get(email, password);
+  const account = db.prepare('SELECT * FROM TAIKHOAN WHERE Email = ? AND MatKhauHash = ?').get(email, password);
   if (!account) return bad(res, 'Email hoặc mật khẩu không đúng.', 401);
   const token = crypto.randomUUID();
   tokens.set(token, account.MaTK);
@@ -122,8 +180,8 @@ app.post('/api/auth/register', (req, res) => {
   const exists = db.prepare('SELECT MaTK FROM TAIKHOAN WHERE Email = ?').get(Email);
   if (exists) return bad(res, 'Email đã được sử dụng.');
   const result = db.prepare(`
-    INSERT INTO TAIKHOAN (Email, MatKhau, HoTen, SDT, VaiTro, TrangThai, NgayTao)
-    VALUES (?, ?, ?, ?, 'KHACHHANG', 'Hoạt động', ?)
+    INSERT INTO TAIKHOAN (Email, MatKhauHash, HoTen, SDT, VaiTro, TrangThai, NgayTao)
+    VALUES (?, ?, ?, ?, 'KhachHang', 'HoatDong', ?)
   `).run(Email, MatKhau, HoTen, SDT || '', new Date().toISOString());
   const maKH = db.prepare('INSERT INTO KHACHHANG (MaTK, DiaChi, AnhDaiDien) VALUES (?, ?, ?)').run(result.lastInsertRowid, DiaChi || '', '').lastInsertRowid;
   ensureCart(maKH);
@@ -149,7 +207,7 @@ app.get('/api/dishes', (req, res) => {
     JOIN DANHMUC dm ON dm.MaDM = m.MaDM
     WHERE (? = 0 OR m.MaDM = ?)
       AND (? = '%%' OR m.TenMon LIKE ? OR m.MoTa LIKE ?)
-      AND (? = 0 OR m.TrangThai = 1)
+      AND (? = 0 OR m.TrangThai = 'CoSan')
     ORDER BY m.MaMon DESC
   `).all(category, category, search, search, search, onlyActive ? 1 : 0);
   ok(res, { dishes: rows });
@@ -169,9 +227,9 @@ app.post('/api/dishes', requireAuth, requireAdmin, (req, res) => {
   const { MaDM, TenMon, Gia, HinhAnh, MoTa, TrangThai, PhanTramGiam } = req.body;
   if (!MaDM || !TenMon || !Gia) return bad(res, 'Thiếu thông tin món ăn.');
   const result = db.prepare(`
-    INSERT INTO MONAN (MaDM, TenMon, Gia, HinhAnh, MoTa, TrangThai, PhanTramGiam)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(MaDM, TenMon, Gia, HinhAnh || '', MoTa || '', TrangThai ? 1 : 0, PhanTramGiam || 0);
+    INSERT INTO MONAN (MaDM, TenMon, Gia, HinhAnh, MoTa, TrangThai, PhanTramGiam, NgayTao, NgayCapNhat)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(MaDM, TenMon, Gia, HinhAnh || '', MoTa || '', dishStatusFromUi(TrangThai), PhanTramGiam || 0, new Date().toISOString(), new Date().toISOString());
   ok(res, { dish: db.prepare('SELECT * FROM MONAN WHERE MaMon = ?').get(result.lastInsertRowid) });
 });
 
@@ -179,14 +237,14 @@ app.put('/api/dishes/:id', requireAuth, requireAdmin, (req, res) => {
   const { MaDM, TenMon, Gia, HinhAnh, MoTa, TrangThai, PhanTramGiam } = req.body;
   db.prepare(`
     UPDATE MONAN
-    SET MaDM = ?, TenMon = ?, Gia = ?, HinhAnh = ?, MoTa = ?, TrangThai = ?, PhanTramGiam = ?
+    SET MaDM = ?, TenMon = ?, Gia = ?, HinhAnh = ?, MoTa = ?, TrangThai = ?, PhanTramGiam = ?, NgayCapNhat = ?
     WHERE MaMon = ?
-  `).run(MaDM, TenMon, Gia, HinhAnh || '', MoTa || '', TrangThai ? 1 : 0, PhanTramGiam || 0, req.params.id);
+  `).run(MaDM, TenMon, Gia, HinhAnh || '', MoTa || '', dishStatusFromUi(TrangThai), PhanTramGiam || 0, new Date().toISOString(), req.params.id);
   ok(res, { dish: db.prepare('SELECT * FROM MONAN WHERE MaMon = ?').get(req.params.id) });
 });
 
 app.delete('/api/dishes/:id', requireAuth, requireAdmin, (req, res) => {
-  db.prepare('UPDATE MONAN SET TrangThai = 0 WHERE MaMon = ?').run(req.params.id);
+  db.prepare("UPDATE MONAN SET TrangThai = 'NgungBan', NgayCapNhat = ? WHERE MaMon = ?").run(new Date().toISOString(), req.params.id);
   ok(res, { success: true });
 });
 
@@ -198,7 +256,7 @@ app.get('/api/cart', requireAuth, (req, res) => {
 app.post('/api/cart/items', requireAuth, (req, res) => {
   if (!req.user.MaKH) return bad(res, 'Chỉ khách hàng mới có giỏ hàng.', 403);
   const maGH = ensureCart(req.user.MaKH);
-  const dish = db.prepare('SELECT * FROM MONAN WHERE MaMon = ? AND TrangThai = 1').get(req.body.MaMon);
+  const dish = db.prepare("SELECT * FROM MONAN WHERE MaMon = ? AND TrangThai = 'CoSan'").get(req.body.MaMon);
   if (!dish) return bad(res, 'Món ăn không khả dụng.', 404);
   const qty = Math.max(1, Number(req.body.SoLuong || 1));
   db.prepare(`
@@ -228,13 +286,13 @@ app.post('/api/orders', requireAuth, (req, res) => {
   if (!cart.items.length) return bad(res, 'Giỏ hàng đang trống.');
   const address = req.body.DiaChiGiao || req.user.DiaChi;
   const phone = req.body.SDTNhanHang || req.user.SDT;
-  const method = req.body.PhuongThucTT || 'Tiền mặt';
+  const method = paymentMethodFromUi(req.body.PhuongThucTT || req.body.HinhThuc);
   if (!address || !phone) return bad(res, 'Vui lòng nhập địa chỉ và số điện thoại nhận hàng.');
 
   const result = db.prepare(`
-    INSERT INTO DONHANG (MaKH, MaNV, NgayDat, DiaChiGiao, SDTNhanHang, TongTien, PhiShip, TrangThai, PhuongThucTT)
-    VALUES (?, NULL, ?, ?, ?, ?, ?, 'Chờ xác nhận', ?)
-  `).run(req.user.MaKH, new Date().toISOString(), address, phone, cart.total, cart.shipping, method);
+    INSERT INTO DONHANG (MaKH, MaNV, NgayDat, DiaChiGiao, SDTNhanHang, TongTien, PhiShip, TrangThai, LyDoHuy)
+    VALUES (?, NULL, ?, ?, ?, ?, ?, 'ChoXacNhan', NULL)
+  `).run(req.user.MaKH, new Date().toISOString(), address, phone, cart.total, cart.shipping);
   const maDH = result.lastInsertRowid;
   const insertDetail = db.prepare(`
     INSERT INTO CHITIETDONHANG (MaDH, MaMon, SoLuong, DonGia, PhanTramGiam, ThanhTien)
@@ -242,9 +300,9 @@ app.post('/api/orders', requireAuth, (req, res) => {
   `);
   cart.items.forEach((item) => insertDetail.run(maDH, item.MaMon, item.SoLuong, item.GiaTaiThoiDiem, item.PhanTramGiam, item.ThanhTien));
   db.prepare('INSERT INTO THANHTOAN (MaDH, ThoiGianTT, SoTien, HinhThuc, TrangThai, MaGiaoDich) VALUES (?, NULL, ?, ?, ?, ?)')
-    .run(maDH, cart.total, method, method === 'Tiền mặt' ? 'Chờ thanh toán' : 'Đã thanh toán', `PAY${String(maDH).padStart(4, '0')}`);
-  db.prepare('INSERT INTO GIAOHANG (MaDH, TrangThai) VALUES (?, ?)').run(maDH, 'Chờ phân công');
-  db.prepare('DELETE FROM CHITIETGIOHANG WHERE MaGH = ?').run(cart.MaGH);
+    .run(maDH, cart.total, method, method === 'TienMat' ? 'DangXuLy' : 'ThanhCong', `PAY${String(maDH).padStart(4, '0')}`);
+  db.prepare('INSERT INTO GIAOHANG (MaDH, MaShipper, TrangThai) VALUES (?, NULL, ?)').run(maDH, 'ChoNhan');
+  db.prepare("UPDATE GIOHANG SET TrangThai = 'DatHang' WHERE MaGH = ?").run(cart.MaGH);
   ok(res, { order: orderDetails(maDH), cart: cartRows(req.user.MaKH) });
 });
 
@@ -263,27 +321,28 @@ app.get('/api/orders/:id', requireAuth, (req, res) => {
 });
 
 app.patch('/api/orders/:id', requireAuth, requireAdmin, (req, res) => {
-  const { TrangThai, TenShipper, SDTShipper, TrangThaiGiao } = req.body;
+  const trangThai = orderStatusFromUi(req.body.TrangThai);
+  const trangThaiGiao = deliveryStatusFromUi(req.body.TrangThaiGiao);
+  const maShipper = req.body.MaShipper || db.prepare('SELECT MaShipper FROM SHIPPER ORDER BY MaShipper LIMIT 1').get()?.MaShipper || null;
   const staffId = req.user.MaNV || db.prepare('SELECT MaNV FROM NHANVIEN ORDER BY MaNV LIMIT 1').get()?.MaNV;
-  db.prepare('UPDATE DONHANG SET TrangThai = COALESCE(?, TrangThai), MaNV = COALESCE(?, MaNV) WHERE MaDH = ?').run(TrangThai, staffId, req.params.id);
+  db.prepare('UPDATE DONHANG SET TrangThai = COALESCE(?, TrangThai), MaNV = COALESCE(?, MaNV) WHERE MaDH = ?').run(trangThai, staffId, req.params.id);
   db.prepare(`
     UPDATE GIAOHANG
-    SET TenShipper = COALESCE(?, TenShipper),
-        SDTShipper = COALESCE(?, SDTShipper),
+    SET MaShipper = COALESCE(?, MaShipper),
         TrangThai = COALESCE(?, TrangThai),
-        ThoiGianNhan = CASE WHEN ? IN ('Đang giao', 'Đã giao') AND ThoiGianNhan IS NULL THEN ? ELSE ThoiGianNhan END,
-        ThoiGianGiao = CASE WHEN ? = 'Đã giao' AND ThoiGianGiao IS NULL THEN ? ELSE ThoiGianGiao END
+        ThoiGianNhan = CASE WHEN ? IN ('DangGiao', 'DaGiao') AND ThoiGianNhan IS NULL THEN ? ELSE ThoiGianNhan END,
+        ThoiGianGiao = CASE WHEN ? = 'DaGiao' AND ThoiGianGiao IS NULL THEN ? ELSE ThoiGianGiao END
     WHERE MaDH = ?
-  `).run(TenShipper, SDTShipper, TrangThaiGiao, TrangThaiGiao, new Date().toISOString(), TrangThaiGiao, new Date().toISOString(), req.params.id);
-  if (TrangThai === 'Hoàn thành') {
-    db.prepare("UPDATE THANHTOAN SET TrangThai = 'Đã thanh toán', ThoiGianTT = COALESCE(ThoiGianTT, ?) WHERE MaDH = ?").run(new Date().toISOString(), req.params.id);
+  `).run(maShipper, trangThaiGiao, trangThaiGiao, new Date().toISOString(), trangThaiGiao, new Date().toISOString(), req.params.id);
+  if (trangThai === 'HoanThanh' || trangThaiGiao === 'DaGiao') {
+    db.prepare("UPDATE THANHTOAN SET TrangThai = 'ThanhCong', ThoiGianTT = COALESCE(ThoiGianTT, ?) WHERE MaDH = ? AND HinhThuc = 'TienMat'").run(new Date().toISOString(), req.params.id);
   }
   ok(res, { order: orderDetails(req.params.id) });
 });
 
 app.get('/api/admin/stats', requireAuth, requireAdmin, (_req, res) => {
   const totalOrders = db.prepare('SELECT COUNT(*) AS value FROM DONHANG').get().value;
-  const revenue = db.prepare("SELECT COALESCE(SUM(TongTien), 0) AS value FROM DONHANG WHERE TrangThai != 'Đã hủy'").get().value;
+  const revenue = db.prepare("SELECT COALESCE(SUM(TongTien), 0) AS value FROM DONHANG WHERE TrangThai != 'DaHuy'").get().value;
   const dishes = db.prepare('SELECT COUNT(*) AS value FROM MONAN').get().value;
   const customers = db.prepare('SELECT COUNT(*) AS value FROM KHACHHANG').get().value;
   const byStatus = db.prepare('SELECT TrangThai, COUNT(*) AS total FROM DONHANG GROUP BY TrangThai').all();
