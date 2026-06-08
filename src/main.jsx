@@ -5,4 +5,6 @@ import './styles.css';
 
 const API = '/api';
 const vnd = (n) => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(n || 0);
-const labels = { ChoXacNhan:'Chờ xác nhận', DangChuanBi:'Đang chuẩn bị', DangGiao:'Đang giao', HoanThanh:'Hoàn thành', DaHuy:'Đã hủy', ChoNhan:'Chờ nhận', DaGiao:'Đã
+const label = {
+  ChoXacNhan: 'Chờ xác nhận', DangChuanBi: 'Đang chuẩn bị', DangGiao: 'Đang giao', HoanThanh: 'Hoàn thành', DaHuy: 'Đã hủy',
+  ChoNhan
